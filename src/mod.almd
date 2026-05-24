@@ -1,0 +1,239 @@
+import math
+
+// Minecraft physics simulation for 1.21.1.
+// Gravity, drag, collision, movement.
+// Corresponds to PrismarineJS/prismarine-physics.
+//
+// Usage:
+//   import mc_physics
+//   let state = mc_physics.tick(state, input)
+
+// --- Constants (Minecraft physics) ---
+
+let GRAVITY = -0.08
+let DRAG = 0.98
+let WATER_DRAG = 0.8
+let PLAYER_WIDTH = 0.6
+let PLAYER_HEIGHT = 1.8
+let PLAYER_EYE_HEIGHT = 1.62
+let WALK_SPEED = 0.1
+let SPRINT_SPEED = 0.13
+let SNEAK_SPEED = 0.03
+let JUMP_VELOCITY = 0.42
+let MAX_FALL_SPEED = -3.92
+let STEP_HEIGHT = 0.6
+
+// --- Types ---
+
+type Vec3 = { x: Float, y: Float, z: Float }
+
+type AABB = { min: Vec3, max: Vec3 }
+
+type PhysicsState = {
+  position: Vec3,
+  velocity: Vec3,
+  on_ground: Bool,
+  in_water: Bool,
+  yaw: Float,
+  pitch: Float,
+}
+
+type MovementInput = {
+  forward: Float,
+  strafe: Float,
+  jump: Bool,
+  sneak: Bool,
+  sprint: Bool,
+}
+
+// --- Vec3 ops ---
+
+fn vec3(x: Float, y: Float, z: Float) -> Vec3 = { x: x, y: y, z: z }
+fn vec3_zero() -> Vec3 = { x: 0.0, y: 0.0, z: 0.0 }
+
+fn vec3_add(a: Vec3, b: Vec3) -> Vec3 =
+  { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
+
+fn vec3_scale(v: Vec3, s: Float) -> Vec3 =
+  { x: v.x * s, y: v.y * s, z: v.z * s }
+
+fn vec3_length(v: Vec3) -> Float =
+  math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+
+fn vec3_distance(a: Vec3, b: Vec3) -> Float =
+  vec3_length(vec3_add(a, vec3_scale(b, -1.0)))
+
+fn vec3_normalize(v: Vec3) -> Vec3 = {
+  let len = vec3_length(v)
+  if len < 0.0001 then vec3_zero()
+  else vec3_scale(v, 1.0 / len)
+}
+
+// --- AABB ---
+
+fn player_aabb(pos: Vec3) -> AABB = {
+  let half_w = PLAYER_WIDTH / 2.0
+  {
+    min: { x: pos.x - half_w, y: pos.y, z: pos.z - half_w },
+    max: { x: pos.x + half_w, y: pos.y + PLAYER_HEIGHT, z: pos.z + half_w },
+  }
+}
+
+fn aabb_intersects(a: AABB, b: AABB) -> Bool =
+  a.min.x < b.max.x and a.max.x > b.min.x and
+  a.min.y < b.max.y and a.max.y > b.min.y and
+  a.min.z < b.max.z and a.max.z > b.min.z
+
+// --- Movement ---
+
+fn no_input() -> MovementInput =
+  { forward: 0.0, strafe: 0.0, jump: false, sneak: false, sprint: false }
+
+fn new_state(x: Float, y: Float, z: Float) -> PhysicsState = {
+  {
+    position: vec3(x, y, z),
+    velocity: vec3_zero(),
+    on_ground: false,
+    in_water: false,
+    yaw: 0.0,
+    pitch: 0.0,
+  }
+}
+
+fn movement_speed(input: MovementInput) -> Float = {
+  if input.sprint then SPRINT_SPEED
+  else if input.sneak then SNEAK_SPEED
+  else WALK_SPEED
+}
+
+fn movement_direction(yaw: Float, forward: Float, strafe: Float) -> Vec3 = {
+  let rad = yaw * math.pi() / 180.0
+  let sin_yaw = math.sin(rad)
+  let cos_yaw = math.cos(rad)
+  let dx = -1.0 * sin_yaw * forward - cos_yaw * strafe
+  let dz = cos_yaw * forward - sin_yaw * strafe
+  let len = math.sqrt(dx * dx + dz * dz)
+  if len < 0.0001 then vec3_zero()
+  else vec3(dx / len, 0.0, dz / len)
+}
+
+// Simulate one tick (1/20 second) of physics.
+// Simplified: no world collision (just gravity + drag).
+fn tick(state: PhysicsState, input: MovementInput) -> PhysicsState = {
+  var vel = state.velocity
+
+  // Horizontal movement
+  let speed = movement_speed(input)
+  let dir = movement_direction(state.yaw, input.forward, input.strafe)
+  vel = { x: vel.x + dir.x * speed, y: vel.y, z: vel.z + dir.z * speed }
+
+  // Jump
+  if input.jump and state.on_ground then {
+    vel = { ...vel, y: JUMP_VELOCITY }
+  } else { () }
+
+  // Gravity
+  vel = { ...vel, y: vel.y + GRAVITY }
+
+  // Clamp fall speed
+  if vel.y < MAX_FALL_SPEED then { vel = { ...vel, y: MAX_FALL_SPEED } } else { () }
+
+  // Drag
+  let drag = if state.in_water then WATER_DRAG else DRAG
+  vel = { x: vel.x * drag, y: vel.y * drag, z: vel.z * drag }
+
+  // Apply velocity
+  let new_pos = vec3_add(state.position, vel)
+
+  // Simple ground check (y = 0 plane for now)
+  let on_ground = new_pos.y <= 0.0
+  let final_pos = if on_ground then { ...new_pos, y: 0.0 } else new_pos
+  let final_vel = if on_ground then { ...vel, y: 0.0 } else vel
+
+  { ...state, position: final_pos, velocity: final_vel, on_ground: on_ground }
+}
+
+// --- Tests ---
+
+test "vec3 ops" {
+  let a = vec3(1.0, 2.0, 3.0)
+  let b = vec3(4.0, 5.0, 6.0)
+  let sum = vec3_add(a, b)
+  assert_eq(sum.x, 5.0)
+  assert_eq(sum.y, 7.0)
+  assert_eq(sum.z, 9.0)
+}
+
+test "vec3_scale" {
+  let v = vec3_scale(vec3(2.0, 3.0, 4.0), 0.5)
+  assert_eq(v.x, 1.0)
+  assert_eq(v.y, 1.5)
+}
+
+test "vec3_zero length" {
+  assert_eq(vec3_length(vec3_zero()), 0.0)
+}
+
+test "vec3_distance" {
+  let d = vec3_distance(vec3(0.0, 0.0, 0.0), vec3(3.0, 4.0, 0.0))
+  assert_eq(d, 5.0)
+}
+
+test "aabb_intersects" where [
+  "overlap" [ax = 0.0, bx = 0.5, want = true],
+  "apart"   [ax = 0.0, bx = 10.0, want = false],
+  "touching" [ax = 0.0, bx = 1.0, want = false],
+] {
+  let a: AABB = { min: vec3(ax, 0.0, 0.0), max: vec3(ax + 1.0, 1.0, 1.0) }
+  let b: AABB = { min: vec3(bx, 0.0, 0.0), max: vec3(bx + 1.0, 1.0, 1.0) }
+  assert_eq(aabb_intersects(a, b), want)
+}
+
+test "new state" {
+  let s = new_state(10.0, 64.0, -20.0)
+  assert_eq(s.position.x, 10.0)
+  assert_eq(s.position.y, 64.0)
+  assert_eq(s.on_ground, false)
+}
+
+test "gravity pulls down" {
+  let s = tick(new_state(0.0, 10.0, 0.0), no_input())
+  assert(s.position.y < 10.0)
+  assert(s.velocity.y < 0.0)
+}
+
+test "lands on ground" {
+  var s = new_state(0.0, 0.5, 0.0)
+  for _i in 0..20 { s = tick(s, no_input()) }
+  assert(s.on_ground)
+  assert_eq(s.position.y, 0.0)
+}
+
+test "jump" {
+  let s = tick({ ...new_state(0.0, 0.0, 0.0), on_ground: true }, { ...no_input(), jump: true })
+  assert(s.velocity.y > 0.0)
+}
+
+test "movement speed" where [
+  "walk"   [sprint = false, sneak = false, want = 0.1],
+  "sprint" [sprint = true, sneak = false, want = 0.13],
+  "sneak"  [sprint = false, sneak = true, want = 0.03],
+] {
+  assert_eq(movement_speed({ ...no_input(), sprint: sprint, sneak: sneak }), want)
+}
+
+test "constants" {
+  assert_eq(PLAYER_HEIGHT, 1.8)
+  assert_eq(PLAYER_EYE_HEIGHT, 1.62)
+  assert_eq(PLAYER_WIDTH, 0.6)
+}
+
+test "water drag is stronger" {
+  assert(WATER_DRAG < DRAG)
+}
+
+test "player_aabb" {
+  let bb = player_aabb(vec3(0.0, 0.0, 0.0))
+  assert_eq(bb.min.y, 0.0)
+  assert_eq(bb.max.y, PLAYER_HEIGHT)
+}
